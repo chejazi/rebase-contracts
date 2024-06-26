@@ -8,7 +8,7 @@ Rebase enables you to stake your assets once (in Rebase), then _restake_ them ac
 
 Neither the Rebase team nor the restaking apps ever control your funds: _only you_ can withdraw staked assets from Rebase, and you can do so _at any time_.
 
-Each token a corresponding reToken ERC-20. When you stake ERC-20s in Rebase, you get a corresponding amount of _reTokens_. For example $DEGEN has [$reDEGEN](https://basescan.org/token/0x5f09c2fa5c4e11fa88964a549dfad2b6fd0c50ab]) which represents $DEGEN staked in Rebase. In order to unstake, stakers need to hold the corresponding amount of $reDEGEN in their wallet.
+Each token has corresponding reToken ERC-20 automatically deployed by Rebase. When you stake ERC-20s in Rebase, you get a corresponding amount of _reTokens_. For example $DEGEN has [$reDEGEN](https://basescan.org/token/0x5f09c2fa5c4e11fa88964a549dfad2b6fd0c50ab]) which represents $DEGEN staked in Rebase. In order to unstake, stakers need to hold the corresponding amount of $reDEGEN in their wallet, which is subsequently burned.
 
 Users can stake their tokens, obtain reTokens, and do various actions with those reTokens. Some use cases include:
 - Create liquidity around staked assets (liquid staking)
@@ -33,7 +33,7 @@ ___
 
 **`stakeETH(address[] memory apps)`**
 
-Same implementation as `stake()`; the contract converts sent ETH to WETH first.
+Same implementation as `stake`; the contract converts sent ETH to WETH first.
 
 ___
 
@@ -48,7 +48,7 @@ ___
 
 **`restake(address[] memory apps, address[] memory tokens)`**
 
-Restakes the `nth` token in `tokens` into the nth app in `apps`.
+Restakes the nth token in `tokens` into the nth app in `apps`.
 Restaking is symbolic; no tokens are actually transferred to `apps`.
 Amount user has staked of each token must be > 0 or call reverts.
 Restaking call to third party contracts must succeed or call reverts.
@@ -57,42 +57,42 @@ ___
 
 **`unrestake(address[] memory apps, address[] memory tokens)`**
 
-Unrestakes the `nth` token in `tokens` from the nth app in `apps`.
+Unrestakes the nth token in `tokens` from the nth app in `apps`.
 Unrestaking is symbolic; no tokens are actually removed from `apps`.
 Amount user has staked of each token must be > 0 or call reverts.
 Call succeeds even if unrestaking call to individual apps reverts.
 
 ### Read APIs
 
-**`function getUserStakedTokens(address user)`**
+**`getUserStakedTokens(address user)`**
 
 Returns an `address[]` array of tokens the user currently has staked in Rebase.
 
-**`function getUserTokenStake(address user, address token)`**
+**`getUserTokenStake(address user, address token)`**
 
 Returns a `uint` corresponding to the amount of a `token` the `user` has staked in Rebase.
 
-**`function getUserTokenApps(address user, address token)`**
+**`getUserTokenApps(address user, address token)`**
 
 Returns an `address[]` array of apps the user has restaked in for `token`.
 
-**`function getTokenReToken(address token)`**
+**`getTokenReToken(address token)`**
 
 Returns the reToken `address` for `token`.
 
-**`function getTokenStake(address token)`**
+**`getTokenStake(address token)`**
 
 Returns a `uint` representing the total amount of `token` staked in Rebase.
 
-**`function getReTokens()`**
+**`getReTokens()`**
 
 Returns an `address[]` array of all tokens staked in Rebase.
 
-**`function getReTokensLength()`**
+**`getReTokensLength()`**
 
 Returns an `uint` of the total number of different tokens staked in Rebase.
 
-**`function getReTokensAt(uint index)`**
+**`getReTokensAt(uint index)`**
 
 Returns an `address` corresponding to the `index`th token in the set of tokens staked in Rebase.
 
