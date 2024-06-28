@@ -2,11 +2,12 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./ReToken.sol";
 
 interface Rebased {
@@ -20,13 +21,12 @@ interface WETH {
     function withdraw(uint amount) external;
 }
 
-contract Rebase is ERC20Burnable {
+contract Rebase is ReentrancyGuard {
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableMap for EnumerableMap.UintToAddressMap;
     using SafeMath for uint256;
 
     struct User {
-        bool locked;
         EnumerableSet.AddressSet tokens;
         mapping(address => uint) tokenStake;
         mapping(address => EnumerableSet.AddressSet) tokenApps;
@@ -39,6 +39,8 @@ contract Rebase is ERC20Burnable {
 
     address private constant _WETH = 0x4200000000000000000000000000000000000006;
     address private immutable _clonableToken;
+
+    uint public constant UNRESTAKE_GAS_LIMIT = 1000000;
 
     event Stake (
         address indexed user,
@@ -56,8 +58,7 @@ contract Rebase is ERC20Burnable {
         address indexed app,
         address indexed user,
         address indexed token,
-        uint quantity,
-        bool success
+        uint quantity
     );
 
     event Unrestake (
@@ -68,23 +69,19 @@ contract Rebase is ERC20Burnable {
         bool success
     );
 
-    constructor() ERC20("Rebase", "REBASE") {
+    constructor() {
         _clonableToken = address(new ReToken());
-        _mint(msg.sender, 1000000000 * (1 ether));
     }
 
     receive() external payable { }
 
-    function stake(address token, uint quantity, address[] memory apps) external {
+    function stake(address token, uint quantity, address[] memory apps) external nonReentrant {
         User storage user = _users[msg.sender];
 
-        require(!user.locked, "No reentrancy");
         require(!_reTokens.contains(token), "Invalid token");
         require(quantity > 0, "Invalid token quantity");
 
-        user.locked = true;
-
-        ERC20(token).transferFrom(msg.sender, address(this), quantity);
+        require(ERC20(token).transferFrom(msg.sender, address(this), quantity), "Unable to transfer token");
         _getReToken(token).mint(msg.sender, quantity);
         _stakes[token] = _stakes[token].add(quantity);
         user.tokenStake[token] = user.tokenStake[token].add(quantity);
@@ -93,19 +90,14 @@ contract Rebase is ERC20Burnable {
         emit Stake(msg.sender, token, quantity);
 
         _updateAppStakes(user, token, quantity, apps);
-
-        user.locked = false;
     }
 
-    function stakeETH(address[] memory apps) external payable {
+    function stakeETH(address[] memory apps) external payable nonReentrant {
         address token = _WETH;
         uint quantity = msg.value;
         User storage user = _users[msg.sender];
 
-        require(!user.locked, "No reentrancy");
         require(quantity > 0, "Invalid token quantity");
-
-        user.locked = true;
 
         WETH(_WETH).deposit{value: quantity}();
         _getReToken(token).mint(msg.sender, quantity);
@@ -116,27 +108,21 @@ contract Rebase is ERC20Burnable {
         emit Stake(msg.sender, token, quantity);
 
         _updateAppStakes(user, token, quantity, apps);
-
-        user.locked = false;
     }
 
-    function unstake(address token, uint quantity) external {
+    function unstake(address token, uint quantity) external nonReentrant {
         User storage user = _users[msg.sender];
         uint tokenStake = user.tokenStake[token];
         bool removeTokenApps = tokenStake == quantity;
         EnumerableSet.AddressSet storage userTokenApps = user.tokenApps[token];
         address[] memory apps = userTokenApps.values();
 
-        require(!user.locked, "No reentrancy");
         require(quantity > 0 && quantity <= tokenStake, "Invalid token quantity");
 
-        user.locked = true;
-
         for (uint i = 0; i < apps.length; i++) {
-            if (removeTokenApps) {
+            if (!_unrestake(apps[i], token, quantity) || removeTokenApps) {
                 userTokenApps.remove(apps[i]);
             }
-            _unrestake(apps[i], token, quantity);
         }
         if (removeTokenApps) {
             user.tokens.remove(token);
@@ -144,50 +130,40 @@ contract Rebase is ERC20Burnable {
 
         _getReToken(token).burn(msg.sender, quantity);
         _stakes[token] = _stakes[token].sub(quantity);
-        user.tokenStake[token] = user.tokenStake[token].sub(quantity);
+        user.tokenStake[token] = tokenStake.sub(quantity);
 
         if (token == _WETH) {
             WETH(_WETH).withdraw(quantity);
             (bool success,) = msg.sender.call{value: quantity}("");
             require(success, "Transfer failed");
         } else {
-            ERC20(token).transfer(msg.sender, quantity);
+            require(ERC20(token).transfer(msg.sender, quantity), "Unable to transfer token");
         }
 
         emit Unstake(msg.sender, token, quantity);
-
-        user.locked = false;
     }
 
-    function restake(address[] memory apps, address[] memory tokens) external {
+    function restake(address[] memory apps, address[] memory tokens) external nonReentrant {
         User storage user = _users[msg.sender];
 
-        require(!user.locked, "No reentrancy");
         require(tokens.length == apps.length, "Argument mismatch");
-
-        user.locked = true;
 
         for (uint i = 0; i < apps.length; i++) {
             address app = apps[i];
             address token = tokens[i];
             uint userStake = user.tokenStake[token];
-            if (!user.tokenApps[token].contains(app)) {
+            if (!user.tokenApps[token].contains(app) && userStake > 0) {
                 user.tokenApps[token].add(app);
                 user.tokens.add(token);
-                require(userStake > 0 && _restake(app, token, userStake), "Unable to restake to provided app");
+                _restake(app, token, userStake);
             }
         }
-
-        user.locked = false;
     }
 
-    function unrestake(address[] memory apps, address[] memory tokens) external {
+    function unrestake(address[] memory apps, address[] memory tokens) external nonReentrant {
         User storage user = _users[msg.sender];
 
-        require(!user.locked, "No reentrancy");
         require(tokens.length == apps.length, "Argument mismatch");
-
-        user.locked = true;
 
         for (uint i = 0; i < apps.length; i++) {
             address app = apps[i];
@@ -197,61 +173,47 @@ contract Rebase is ERC20Burnable {
                 if (user.tokenApps[token].length() == 0) {
                     user.tokens.remove(token);
                 }
+                // Ignore return value since app is removed above
                 _unrestake(app, token, user.tokenStake[token]);
             }
         }
-
-        user.locked = false;
     }
 
     function _updateAppStakes(User storage user, address token, uint addedStake, address[] memory addedApps) internal {
         uint currentStake = user.tokenStake[token];
-        uint previousStake = currentStake.sub(addedStake);
         EnumerableSet.AddressSet storage userTokens = user.tokens;
         EnumerableSet.AddressSet storage userTokenApps = user.tokenApps[token];
         address[] memory existingApps = userTokenApps.values();
 
         for (uint i = 0; i < existingApps.length; i++) {
-            address app = existingApps[i];
-            if (!_restake(app, token, addedStake)) {
-                // Remove broken restaking apps
-                userTokenApps.remove(app);
-                if (userTokenApps.length() == 0) {
-                    userTokens.remove(token);
-                }
-                _unrestake(app, token, previousStake);
-            }
+            _restake(existingApps[i], token, addedStake);
         }
         for (uint i = 0; i < addedApps.length; i++) {
             address app = addedApps[i];
             if (!userTokenApps.contains(app)) {
                 userTokenApps.add(app);
                 userTokens.add(token);
-                require(_restake(app, token, currentStake), "Unable to restake to provided app");
+                _restake(app, token, currentStake);
             }
         }
     }
 
-
-    function _restake(address app, address token, uint quantity) internal returns (bool) {
-        (bool success,) = app.call(
-            abi.encodePacked(
-                Rebased.restake.selector,
-                abi.encode(msg.sender, token, quantity)
-            )
-        );
-        emit Restake(app, msg.sender, token, quantity, success);
-        return success;
+    function _restake(address app, address token, uint quantity) internal {
+        try Rebased(app).restake(msg.sender, token, quantity) {
+            emit Restake(app, msg.sender, token, quantity);
+        } catch {
+            revert(string.concat("Unable to restake to app: ", Strings.toHexString(app)));
+        }
     }
 
-    function _unrestake(address app, address token, uint quantity) internal {
-        (bool success,) = app.call(
-            abi.encodePacked(
-                Rebased.unrestake.selector,
-                abi.encode(msg.sender, token, quantity)
-            )
-        );
-        emit Unrestake(app, msg.sender, token, quantity, success);
+    function _unrestake(address app, address token, uint quantity) internal returns (bool) {
+        try Rebased(app).unrestake{gas: UNRESTAKE_GAS_LIMIT}(msg.sender, token, quantity) {
+            emit Unrestake(app, msg.sender, token, quantity, true);
+            return true;
+        } catch {
+            emit Unrestake(app, msg.sender, token, quantity, false);
+            return false;
+        }
     }
 
     function _getReToken(address token) internal returns (ReToken) {

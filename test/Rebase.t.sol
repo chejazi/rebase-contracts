@@ -1,4 +1,4 @@
-// test/MyContract.t.sol
+// test/Rebase.t.sol
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -15,14 +15,10 @@ contract RebaseTest is Test {
     address productionWeth = 0x4200000000000000000000000000000000000006;
     TestERC20 tokenA;
     TestERC20 tokenB;
-    TestERC20 tokenC;
-    TestApp appA;
-    TestApp appB;
-    TestApp appC;
+    MockApp appA;
+    MockApp appB;
     uint constant supply = 1 ether * 1000;
     address private constant userA = 0x0000000000000000000000000000000000000001;
-    address private constant userB = 0x0000000000000000000000000000000000000002;
-    address private constant userC = 0x0000000000000000000000000000000000000003;
 
     function setUp() public {
         weth = new WETH9();
@@ -30,15 +26,13 @@ contract RebaseTest is Test {
         rebase = new Rebase();
         tokenA = new TestERC20("A", supply);
         tokenB = new TestERC20("B", supply);
-        tokenC = new TestERC20("C", supply);
-        appA = new TestApp();
-        appB = new TestApp();
+        appA = new MockApp();
+        appB = new MockApp();
     }
 
     function test_setup() public view {
         assertEq(tokenA.balanceOf(address(this)), supply);
         assertEq(tokenB.balanceOf(address(this)), supply);
-        assertEq(tokenC.balanceOf(address(this)), supply);
     }
 
     // Receive ETH sent to the contract
@@ -254,21 +248,16 @@ contract RebaseTest is Test {
         // Disable unrestaking
         appA.disableUnrestaking();
 
-        // Unstake 2; unrestake fails but we keep in list
+        // Unstake 2; unrestake fails so we remove appA
         rebase.unstake(tokenAddr, 2);
         stake = rebase.getUserTokenStake(thisAddr, tokenAddr);
-        restaked = appA.getUserTokenStake(thisAddr, tokenAddr);
         restakedB = appB.getUserTokenStake(thisAddr, tokenAddr);
         tokenApps = rebase.getUserTokenApps(thisAddr, tokenAddr);
         assertEq(stake, 4);
-        assertEq(restaked, 6);
         assertEq(restakedB, 4);
-        assertEq(tokenApps.length, 2);
+        assertEq(tokenApps.length, 1);
 
-        // Disable restaking
-        appA.disableRestaking();
-
-        // Stake 1; broken app is autoremoved after failed restake
+        // Stake 1; should go to appB
         rebase.stake(tokenAddr, 1, noApps);
         stake = rebase.getUserTokenStake(thisAddr, tokenAddr);
         restakedB = appB.getUserTokenStake(thisAddr, tokenAddr);
@@ -277,5 +266,34 @@ contract RebaseTest is Test {
         assertEq(restakedB, 5);
         assertEq(tokenApps[0], appBAddr);
         assertEq(tokenApps.length, 1);
+
+        // Make app B consume infinite gas unrestaking
+        appB.disableUnrestaking();
+        appB.setInfiniteGasUnrestaking();
+
+        // Should remove app
+        rebase.unstake(tokenAddr, 1);
+        stake = rebase.getUserTokenStake(thisAddr, tokenAddr);
+        restakedB = appB.getUserTokenStake(thisAddr, tokenAddr);
+        tokenApps = rebase.getUserTokenApps(thisAddr, tokenAddr);
+        assertEq(stake, 4);
+        assertEq(restakedB, 5); // broken
+        assertEq(tokenApps.length, 0);
+    }
+
+    function test_reentrancy() public {
+        address appAAddr = address(appA);
+        address thisAddr = address(this);
+        vm.deal(thisAddr, 10 ether);
+        assertEq(thisAddr.balance, 10 ether);
+        payable(address(appA)).transfer(1 ether);
+        address[] memory apps = new address[](1);
+        apps[0] = appAAddr;
+        rebase.stakeETH{value: 1 ether}(apps);
+
+        appA.setReentrancy();
+        vm.expectRevert();
+        // should revert because of reentrancy
+        rebase.stakeETH{value: 1 ether}(apps);
     }
 }
