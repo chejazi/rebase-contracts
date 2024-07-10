@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Snapshot.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-contract ReToken is ERC20Snapshot {
+contract ReToken is ERC20 {
     address private _deployer;
     address private _token;
 
@@ -35,13 +34,11 @@ contract ReToken is ERC20Snapshot {
         return ERC20(_token).decimals();
     }
 
-    function mint(address to, uint tokens) external onlyDeployer returns (uint) {
+    function mint(address to, uint tokens) external onlyDeployer {
         _mint(to, tokens);
-        return totalSupply();
     }
 
-    function burn(address from, uint tokens) external onlyDeployer returns (uint) {
+    function burn(address from, uint tokens) external onlyDeployer {
         _burn(from, tokens);
-        return totalSupply();
     }
 }

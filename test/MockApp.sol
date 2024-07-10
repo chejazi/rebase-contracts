@@ -12,16 +12,11 @@ contract MockApp is Rebased {
     fallback() external payable { }
     receive() external payable { }
 
-    function appname() external pure returns (string memory) {
-        return "MockApp";
-    }
-
     function restake(address user, address token, uint quantity) external {
         require(restakingEnabled, "Restaking Disabled");
         userTokenStakes[user][token] += quantity;
         if (testReentrancy) {
-            address[] memory noApps = new address[](0);
-            Rebase(payable(msg.sender)).stakeETH{value: 1 ether}(noApps);
+            Rebase(payable(msg.sender)).stakeETH{value: 1 ether}(address(this));
         }
     }
 
@@ -39,7 +34,7 @@ contract MockApp is Rebased {
         }
     }
 
-    function getUserTokenStake(address user, address token) public view returns (uint) {
+    function getStake(address user, address token) external view returns (uint) {
         return userTokenStakes[user][token];
     }
 

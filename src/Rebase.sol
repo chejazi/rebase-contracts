@@ -6,12 +6,11 @@ import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./ReToken.sol";
 
 interface Rebased {
-    function appname() external returns (string memory);
+    function getStake(address user, address token) external view returns (uint);
     function restake(address user, address token, uint quantity) external;
     function unrestake(address user, address token, uint quantity) external;
 }
@@ -23,18 +22,16 @@ interface WETH {
 
 contract Rebase is ReentrancyGuard {
     using EnumerableSet for EnumerableSet.AddressSet;
+    using EnumerableMap for EnumerableMap.AddressToUintMap;
     using EnumerableMap for EnumerableMap.UintToAddressMap;
     using SafeMath for uint256;
 
     struct User {
-        EnumerableSet.AddressSet tokens;
-        mapping(address => uint) tokenStake;
-        mapping(address => EnumerableSet.AddressSet) tokenApps;
+        EnumerableSet.AddressSet apps;
+        mapping(address => EnumerableMap.AddressToUintMap) appTokenStakes;
     }
 
     EnumerableMap.UintToAddressMap private _tokenReToken;
-    EnumerableSet.AddressSet private _reTokens;
-    mapping(address => uint) private _stakes;
     mapping(address => User) private _users;
 
     address private constant _WETH = 0x4200000000000000000000000000000000000006;
@@ -44,29 +41,17 @@ contract Rebase is ReentrancyGuard {
 
     event Stake (
         address indexed user,
+        address indexed app,
         address indexed token,
         uint quantity
     );
 
     event Unstake (
         address indexed user,
-        address indexed token,
-        uint quantity
-    );
-
-    event Restake (
         address indexed app,
-        address indexed user,
-        address indexed token,
-        uint quantity
-    );
-
-    event Unrestake (
-        address indexed app,
-        address indexed user,
         address indexed token,
         uint quantity,
-        bool success
+        bool forced
     );
 
     constructor() {
@@ -75,62 +60,39 @@ contract Rebase is ReentrancyGuard {
 
     receive() external payable { }
 
-    function stake(address token, uint quantity, address[] memory apps) external nonReentrant {
-        User storage user = _users[msg.sender];
-
-        require(!_reTokens.contains(token), "Invalid token");
+    function stake(address token, uint quantity, address app) external nonReentrant {
         require(quantity > 0, "Invalid token quantity");
-
         require(ERC20(token).transferFrom(msg.sender, address(this), quantity), "Unable to transfer token");
-        _getReToken(token).mint(msg.sender, quantity);
-        _stakes[token] = _stakes[token].add(quantity);
-        user.tokenStake[token] = user.tokenStake[token].add(quantity);
-        user.tokens.add(token);
-
-        emit Stake(msg.sender, token, quantity);
-
-        _updateAppStakes(user, token, quantity, apps);
+        _stake(app, token, quantity);
     }
 
-    function stakeETH(address[] memory apps) external payable nonReentrant {
-        address token = _WETH;
-        uint quantity = msg.value;
-        User storage user = _users[msg.sender];
-
-        require(quantity > 0, "Invalid token quantity");
-
-        WETH(_WETH).deposit{value: quantity}();
-        _getReToken(token).mint(msg.sender, quantity);
-        _stakes[token] = _stakes[token].add(quantity);
-        user.tokenStake[token] = user.tokenStake[token].add(quantity);
-        user.tokens.add(token);
-
-        emit Stake(msg.sender, token, quantity);
-
-        _updateAppStakes(user, token, quantity, apps);
+    function stakeETH(address app) external payable nonReentrant {
+        require(msg.value > 0, "Invalid token quantity");
+        WETH(_WETH).deposit{value: msg.value}();
+        _stake(app, _WETH, msg.value);
     }
 
-    function unstake(address token, uint quantity) external nonReentrant {
+    function unstake(address token, uint quantity, address app) external nonReentrant {
         User storage user = _users[msg.sender];
-        uint tokenStake = user.tokenStake[token];
-        bool removeTokenApps = tokenStake == quantity;
-        EnumerableSet.AddressSet storage userTokenApps = user.tokenApps[token];
-        address[] memory apps = userTokenApps.values();
+        (,uint staked) = user.appTokenStakes[app].tryGet(token);
 
-        require(quantity > 0 && quantity <= tokenStake, "Invalid token quantity");
+        require(quantity > 0 && quantity <= staked, "Invalid token quantity");
+        uint newStake = staked.sub(quantity);
 
-        for (uint i = 0; i < apps.length; i++) {
-            if (!_unrestake(apps[i], token, quantity) || removeTokenApps) {
-                userTokenApps.remove(apps[i]);
+        bool forced = false;
+        try Rebased(app).unrestake{gas: UNRESTAKE_GAS_LIMIT}(msg.sender, token, quantity) { }
+        catch { forced = true; }
+
+        if (newStake == 0) {
+            user.appTokenStakes[app].remove(token);
+            if (user.appTokenStakes[app].length() == 0) {
+                user.apps.remove(app);
             }
-        }
-        if (removeTokenApps) {
-            user.tokens.remove(token);
+        } else {
+            user.appTokenStakes[app].set(token, newStake);
         }
 
         _getReToken(token).burn(msg.sender, quantity);
-        _stakes[token] = _stakes[token].sub(quantity);
-        user.tokenStake[token] = tokenStake.sub(quantity);
 
         if (token == _WETH) {
             WETH(_WETH).withdraw(quantity);
@@ -140,80 +102,21 @@ contract Rebase is ReentrancyGuard {
             require(ERC20(token).transfer(msg.sender, quantity), "Unable to transfer token");
         }
 
-        emit Unstake(msg.sender, token, quantity);
+        emit Unstake(app, msg.sender, token, quantity, forced);
     }
 
-    function restake(address[] memory apps, address[] memory tokens) external nonReentrant {
+    function _stake(address app, address token, uint quantity) internal {
         User storage user = _users[msg.sender];
+        (,uint staked) = user.appTokenStakes[app].tryGet(token);
 
-        require(tokens.length == apps.length, "Argument mismatch");
+        _getReToken(token).mint(msg.sender, quantity);
 
-        for (uint i = 0; i < apps.length; i++) {
-            address app = apps[i];
-            address token = tokens[i];
-            uint userStake = user.tokenStake[token];
-            if (!user.tokenApps[token].contains(app) && userStake > 0) {
-                user.tokenApps[token].add(app);
-                user.tokens.add(token);
-                _restake(app, token, userStake);
-            }
-        }
-    }
+        user.apps.add(app);
+        user.appTokenStakes[app].set(token, staked + quantity);
 
-    function unrestake(address[] memory apps, address[] memory tokens) external nonReentrant {
-        User storage user = _users[msg.sender];
+        Rebased(app).restake(msg.sender, token, quantity);
 
-        require(tokens.length == apps.length, "Argument mismatch");
-
-        for (uint i = 0; i < apps.length; i++) {
-            address app = apps[i];
-            address token = tokens[i];
-            if (user.tokenApps[token].contains(app)) {
-                user.tokenApps[token].remove(app);
-                if (user.tokenApps[token].length() == 0) {
-                    user.tokens.remove(token);
-                }
-                // Ignore return value since app is removed above
-                _unrestake(app, token, user.tokenStake[token]);
-            }
-        }
-    }
-
-    function _updateAppStakes(User storage user, address token, uint addedStake, address[] memory addedApps) internal {
-        uint currentStake = user.tokenStake[token];
-        EnumerableSet.AddressSet storage userTokens = user.tokens;
-        EnumerableSet.AddressSet storage userTokenApps = user.tokenApps[token];
-        address[] memory existingApps = userTokenApps.values();
-
-        for (uint i = 0; i < existingApps.length; i++) {
-            _restake(existingApps[i], token, addedStake);
-        }
-        for (uint i = 0; i < addedApps.length; i++) {
-            address app = addedApps[i];
-            if (!userTokenApps.contains(app)) {
-                userTokenApps.add(app);
-                userTokens.add(token);
-                _restake(app, token, currentStake);
-            }
-        }
-    }
-
-    function _restake(address app, address token, uint quantity) internal {
-        try Rebased(app).restake(msg.sender, token, quantity) {
-            emit Restake(app, msg.sender, token, quantity);
-        } catch {
-            revert(string.concat("Unable to restake to app: ", Strings.toHexString(app)));
-        }
-    }
-
-    function _unrestake(address app, address token, uint quantity) internal returns (bool) {
-        try Rebased(app).unrestake{gas: UNRESTAKE_GAS_LIMIT}(msg.sender, token, quantity) {
-            emit Unrestake(app, msg.sender, token, quantity, true);
-            return true;
-        } catch {
-            emit Unrestake(app, msg.sender, token, quantity, false);
-            return false;
-        }
+        emit Stake(app, msg.sender, token, quantity);
     }
 
     function _getReToken(address token) internal returns (ReToken) {
@@ -223,7 +126,6 @@ contract Rebase is ReentrancyGuard {
             reToken = Clones.cloneDeterministic(_clonableToken, bytes32(tokenId));
             ReToken(reToken).initialize(token);
             _tokenReToken.set(tokenId, reToken);
-            _reTokens.add(reToken);
         }
         return ReToken(reToken);
     }
@@ -232,35 +134,43 @@ contract Rebase is ReentrancyGuard {
         return uint(uint160(token));
     }
 
-    function getUserStakedTokens(address user) external view returns (address[] memory) {
-        return _users[user].tokens.values();
+    function getApps(address user) external view returns (address[] memory) {
+        return _users[user].apps.values();
     }
 
-    function getUserTokenStake(address user, address token) public view returns (uint) {
-        return _users[user].tokenStake[token];
+    function getApp(address user, uint index) external view returns (address) {
+        return _users[user].apps.at(index);
     }
 
-    function getUserTokenApps(address user, address token) external view returns (address[] memory) {
-        return _users[user].tokenApps[token].values();
+    function getNumApps(address user) external view returns (uint) {
+        return _users[user].apps.length();
     }
 
-    function getTokenReToken(address token) external view returns (address) {
+    function getStake(address user, address app, address token) external view returns (uint) {
+        (,uint staked) = _users[user].appTokenStakes[app].tryGet(token);
+        return staked;
+    }
+
+    function getTokensAndStakes(address user, address app) external view returns (address[] memory, uint[] memory) {
+        EnumerableMap.AddressToUintMap storage tokenStakes = _users[user].appTokenStakes[app];
+        uint length = tokenStakes.length();
+        address[] memory tokens = new address[](length);
+        uint[] memory stakes = new uint[](length);
+        for (uint i = 0; i < length; i++) {
+            (tokens[i], stakes[i]) = tokenStakes.at(i);
+        }
+        return (tokens, stakes);
+    }
+
+    function getTokenAndStake(address user, address app, uint index) external view returns (address, uint) {
+        return _users[user].appTokenStakes[app].at(index);
+    }
+
+    function getNumTokenStakes(address user, address app) external view returns (uint) {
+        return _users[user].appTokenStakes[app].length();
+    }
+
+    function getReToken(address token) external view returns (address) {
         return _tokenReToken.get(_tokenToId(token));
-    }
-
-    function getTokenStake(address token) external view returns (uint) {
-        return _stakes[token];
-    }
-
-    function getReTokens() external view returns (address[] memory) {
-        return _reTokens.values();
-    }
-
-    function getReTokensLength() external view returns (uint) {
-        return _reTokens.length();
-    }
-
-    function getReTokensAt(uint index) external view returns (address) {
-        return _reTokens.at(index);
     }
 }
