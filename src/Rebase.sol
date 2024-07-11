@@ -102,7 +102,7 @@ contract Rebase is ReentrancyGuard {
             require(ERC20(token).transfer(msg.sender, quantity), "Unable to transfer token");
         }
 
-        emit Unstake(app, msg.sender, token, quantity, forced);
+        emit Unstake(msg.sender, app, token, quantity, forced);
     }
 
     function _stake(address app, address token, uint quantity) internal {
@@ -116,7 +116,7 @@ contract Rebase is ReentrancyGuard {
 
         Rebased(app).restake(msg.sender, token, quantity);
 
-        emit Stake(app, msg.sender, token, quantity);
+        emit Stake(msg.sender, app, token, quantity);
     }
 
     function _getReToken(address token) internal returns (ReToken) {
