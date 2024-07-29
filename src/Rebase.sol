@@ -10,9 +10,8 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./ReToken.sol";
 
 interface Rebased {
-    function getStake(address user, address token) external view returns (uint);
-    function restake(address user, address token, uint quantity) external;
-    function unrestake(address user, address token, uint quantity) external;
+    function onStake(address user, address token, uint quantity) external;
+    function onUnstake(address user, address token, uint quantity) external;
 }
 
 interface WETH {
@@ -33,6 +32,8 @@ contract Rebase is ReentrancyGuard {
 
     EnumerableMap.UintToAddressMap private _tokenReToken;
     mapping(address => User) private _users;
+    mapping(address => EnumerableMap.AddressToUintMap) private _appTokenStakes;
+    mapping(address => EnumerableSet.AddressSet) private _appUsers;
 
     address private constant _WETH = 0x4200000000000000000000000000000000000006;
     address private immutable _clonableToken;
@@ -61,62 +62,76 @@ contract Rebase is ReentrancyGuard {
     receive() external payable { }
 
     function stake(address token, uint quantity, address app) external nonReentrant {
-        require(quantity > 0, "Invalid token quantity");
         require(ERC20(token).transferFrom(msg.sender, address(this), quantity), "Unable to transfer token");
+        _getReToken(token).mint(msg.sender, quantity);
         _stake(app, token, quantity);
     }
 
     function stakeETH(address app) external payable nonReentrant {
-        require(msg.value > 0, "Invalid token quantity");
         WETH(_WETH).deposit{value: msg.value}();
+        _getReToken(_WETH).mint(msg.sender, msg.value);
         _stake(app, _WETH, msg.value);
     }
 
     function unstake(address token, uint quantity, address app) external nonReentrant {
-        User storage user = _users[msg.sender];
-        (,uint staked) = user.appTokenStakes[app].tryGet(token);
-
-        require(quantity > 0 && quantity <= staked, "Invalid token quantity");
-        uint newStake = staked.sub(quantity);
-
-        bool forced = false;
-        try Rebased(app).unrestake{gas: UNRESTAKE_GAS_LIMIT}(msg.sender, token, quantity) { }
-        catch { forced = true; }
-
-        if (newStake == 0) {
-            user.appTokenStakes[app].remove(token);
-            if (user.appTokenStakes[app].length() == 0) {
-                user.apps.remove(app);
-            }
-        } else {
-            user.appTokenStakes[app].set(token, newStake);
-        }
-
+        _unstake(app, token, quantity);
         _getReToken(token).burn(msg.sender, quantity);
+        require(ERC20(token).transfer(msg.sender, quantity), "Unable to transfer token");
+    }
 
-        if (token == _WETH) {
-            WETH(_WETH).withdraw(quantity);
-            (bool success,) = msg.sender.call{value: quantity}("");
-            require(success, "Transfer failed");
-        } else {
-            require(ERC20(token).transfer(msg.sender, quantity), "Unable to transfer token");
-        }
+    function unstakeETH(uint quantity, address app) external nonReentrant {
+        _unstake(app, _WETH, quantity);
+        _getReToken(_WETH).burn(msg.sender, quantity);
+        WETH(_WETH).withdraw(quantity);
+        (bool transferred,) = msg.sender.call{value: quantity}("");
+        require(transferred, "Transfer failed");
+    }
 
-        emit Unstake(msg.sender, app, token, quantity, forced);
+    function restake(address token, uint quantity, address fromApp, address toApp) external nonReentrant {
+        _unstake(fromApp, token, quantity);
+        _stake(toApp, token, quantity);
     }
 
     function _stake(address app, address token, uint quantity) internal {
         User storage user = _users[msg.sender];
-        (,uint staked) = user.appTokenStakes[app].tryGet(token);
+        (,uint userStake) = user.appTokenStakes[app].tryGet(token);
+        (,uint appStake) = _appTokenStakes[app].tryGet(token);
 
-        _getReToken(token).mint(msg.sender, quantity);
+        require(quantity > 0, "Invalid token quantity");
 
         user.apps.add(app);
-        user.appTokenStakes[app].set(token, staked + quantity);
+        user.appTokenStakes[app].set(token, userStake.add(quantity));
+        _appTokenStakes[app].set(token, appStake.add(quantity));
+        _appUsers[app].add(msg.sender);
 
-        Rebased(app).restake(msg.sender, token, quantity);
+        Rebased(app).onStake(msg.sender, token, quantity);
 
         emit Stake(msg.sender, app, token, quantity);
+    }
+
+    function _unstake(address app, address token, uint quantity) internal {
+        User storage user = _users[msg.sender];
+        (,uint userStake) = user.appTokenStakes[app].tryGet(token);
+        (,uint appStake) = _appTokenStakes[app].tryGet(token);
+
+        require(quantity > 0 && quantity <= userStake, "Invalid token quantity");
+
+        if (userStake == quantity) {
+            user.appTokenStakes[app].remove(token);
+            if (user.appTokenStakes[app].length() == 0) {
+                user.apps.remove(app);
+                _appUsers[app].remove(msg.sender);
+            }
+        } else {
+            user.appTokenStakes[app].set(token, userStake.sub(quantity));
+        }
+        _appTokenStakes[app].set(token, appStake.sub(quantity));
+
+        bool forced = false;
+        try Rebased(app).onUnstake{gas: UNRESTAKE_GAS_LIMIT}(msg.sender, token, quantity) { }
+        catch { forced = true; }
+
+        emit Unstake(msg.sender, app, token, quantity, forced);
     }
 
     function _getReToken(address token) internal returns (ReToken) {
@@ -134,39 +149,73 @@ contract Rebase is ReentrancyGuard {
         return uint(uint160(token));
     }
 
-    function getApps(address user) external view returns (address[] memory) {
+    function getUserApps(address user) external view returns (address[] memory) {
         return _users[user].apps.values();
     }
 
-    function getApp(address user, uint index) external view returns (address) {
+    function getUserAppAt(address user, uint index) external view returns (address) {
         return _users[user].apps.at(index);
     }
 
-    function getNumApps(address user) external view returns (uint) {
+    function getNumUserApps(address user) external view returns (uint) {
         return _users[user].apps.length();
     }
 
-    function getStake(address user, address app, address token) external view returns (uint) {
-        (,uint staked) = _users[user].appTokenStakes[app].tryGet(token);
-        return staked;
+    function getAppUsers(address app) external view returns (address[] memory) {
+        return _appUsers[app].values();
     }
 
-    function getTokensAndStakes(address user, address app) external view returns (address[] memory, uint[] memory) {
-        EnumerableMap.AddressToUintMap storage tokenStakes = _users[user].appTokenStakes[app];
-        uint length = tokenStakes.length();
-        address[] memory tokens = new address[](length);
-        uint[] memory stakes = new uint[](length);
-        for (uint i = 0; i < length; i++) {
-            (tokens[i], stakes[i]) = tokenStakes.at(i);
+    function getAppUserAt(address app, uint index) external view returns (address) {
+        return _appUsers[app].at(index);
+    }
+
+    function getNumAppUsers(address app) external view returns (uint) {
+        return _appUsers[app].length();
+    }
+
+    function getAppStake(address app, address token) external view returns (uint) {
+        (,uint appStake) = _appTokenStakes[app].tryGet(token);
+        return appStake;
+    }
+
+    function getAppStakes(address app) external view returns (address[] memory, uint[] memory) {
+        EnumerableMap.AddressToUintMap storage appStakes = _appTokenStakes[app];
+        address[] memory tokens = appStakes.keys();
+        uint[] memory stakes = new uint[](tokens.length);
+        for (uint i = 0; i < tokens.length; i++) {
+            stakes[i] = appStakes.get(tokens[i]);
         }
         return (tokens, stakes);
     }
 
-    function getTokenAndStake(address user, address app, uint index) external view returns (address, uint) {
+    function getAppStakeAt(address app, uint index) external view returns (address, uint) {
+        return _appTokenStakes[app].at(index);
+    }
+
+    function getNumAppStakes(address app) external view returns (uint) {
+        return _appTokenStakes[app].length();
+    }
+
+    function getUserAppStake(address user, address app, address token) external view returns (uint) {
+        (,uint userStake) = _users[user].appTokenStakes[app].tryGet(token);
+        return userStake;
+    }
+
+    function getUserAppStakes(address user, address app) external view returns (address[] memory, uint[] memory) {
+        EnumerableMap.AddressToUintMap storage userStakes = _users[user].appTokenStakes[app];
+        address[] memory tokens = userStakes.keys();
+        uint[] memory stakes = new uint[](tokens.length);
+        for (uint i = 0; i < tokens.length; i++) {
+            stakes[i] = userStakes.get(tokens[i]);
+        }
+        return (tokens, stakes);
+    }
+
+    function getUserAppStakeAt(address user, address app, uint index) external view returns (address, uint) {
         return _users[user].appTokenStakes[app].at(index);
     }
 
-    function getNumTokenStakes(address user, address app) external view returns (uint) {
+    function getNumUserAppStakes(address user, address app) external view returns (uint) {
         return _users[user].appTokenStakes[app].length();
     }
 

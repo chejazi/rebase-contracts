@@ -12,7 +12,7 @@ contract MockApp is Rebased {
     fallback() external payable { }
     receive() external payable { }
 
-    function restake(address user, address token, uint quantity) external {
+    function onStake(address user, address token, uint quantity) external {
         require(restakingEnabled, "Restaking Disabled");
         userTokenStakes[user][token] += quantity;
         if (testReentrancy) {
@@ -20,7 +20,7 @@ contract MockApp is Rebased {
         }
     }
 
-    function unrestake(address user, address token, uint quantity) external {
+    function onUnstake(address user, address token, uint quantity) external {
         if (unrestakingEnabled) {
             userTokenStakes[user][token] -= quantity;
         } else if (infiniteGasUnrestaking) {

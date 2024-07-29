@@ -17,7 +17,7 @@ Users can stake their tokens, obtain reTokens, and do various actions with those
 
 ### Write APIs
 
-There are three main write methods when interacting with Rebase:
+There are five main write methods when interacting with Rebase:
 
 ___
 
@@ -36,7 +36,7 @@ Same implementation as `stake`; the contract converts sent ETH to WETH first.
 
 ___
 
-**`unstake(address token, uint quantity, app)`**
+**`unstake(address token, uint quantity, address app)`**
 
 Unstakes `quantity` of token `token` and transfers them back to the user.
 Unrestakes those same tokens from `app`. Proceeds even if unrestaking fails.
@@ -44,38 +44,88 @@ The user *must* have `quantity` corresponding reTokens in their wallet.
 Remove the token from the user's app-stake-list if entire stake is unstaked.
 Remove the app from the user's app-list if no tokens are staked in app.
 
+___
+
+**`unstakeETH(address app, uint quantity)`**
+
+Same implementation as `unstake`; the contract converts unstaked WETH to ETH before transferring to user.
+
+___
+
+**`restake(address token, uint quantity, address fromApp, address toApp)`**
+
+Transfers an already staked `quantity` of `token` from `fromApp` to `toApp`.
+Does not mint/burn/transfer reTokens or `token`. Simply reassigns stake.
+
+___
 
 ### Read APIs
 
-**`getApps(address user)`**
+**`getUserApps(address user)`**
 
 Returns an `address[]` array of apps the `user` currently has tokens staked in on Rebase.
 
-**`getApp(address user, uint index)`**
+**`getUserAppAt(address user, uint index)`**
 
 Returns the `address` of the `index`th app that the `user` currently has tokens staked in on Rebase.
 
-**`getNumApps(address user)`**
+**`getNumUserApps(address user)`**
 
 Returns a `uint` of the total number of different apps the `user` has staked tokens in on Rebase.
 
-**`getStake(address user, address app, address token)`**
+___
+
+**`getAppUsers(address app)`**
+
+Returns an `address[]` array of users who currently have tokens staked in `app` on Rebase.
+
+**`getAppUserAt(address app, uint index)`**
+
+Returns the `address` of the `index`th user that currently has tokens staked in `app` on Rebase.
+
+**`getNumAppUsers(address app)`**
+
+Returns a `uint` of the total number of users that have staked tokens in `app` on Rebase.
+
+___
+
+**`getAppStake(address app, address token)`**
+
+Returns a `uint` quantity of `token` all users have staked in `app` on Rebase.
+
+**`getAppStakes(address app)`**
+
+Returns an `(address[], uint[])` pair of tokens and stakes staked in `app` on Rebase.
+
+**`getAppStakeAt(address app, uint index)`**
+
+Returns add `(address, uint)` pair of the `index`th token and stake staked in `app` on Rebase.
+
+**`getNumAppStakes(address app)`**
+
+Returns a `uint` of the total number of tokens staked in `app` on Rebase.
+
+___
+
+**`getUserAppStake(address user, address app, address token)`**
 
 Returns a `uint` quantity of `token` the `user` has staked in `app` on Rebase.
 
-**`getTokensAndStakes(address user, address app)`**
+**`getUserAppStakes(address user, address app)`**
 
 Returns an `(address[], uint[])` pair of tokens and stakes that the `user` has staked in `app` on Rebase.
 
-**`getTokenAndStake(address user, address app, uint index)`**
+**`getUserAppStakeAt(address user, address app, uint index)`**
 
 Returns a pair `(address, uint)` of the `index`th  token and stake that the `user` has staked in `app` on Rebase.
 
-**`getNumTokenStakes(address user, address app)`**
+**`getNumUserAppStakes(address user, address app)`**
 
 Returns a `uint` of the total number of different tokens the `user` has staked in `app` on Rebase.
 
-**`getTokenReToken(address token)`**
+___
+
+**`getReToken(address token)`**
 
 Returns the reToken `address` for `token`.
 

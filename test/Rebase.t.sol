@@ -62,12 +62,12 @@ contract RebaseTest is Test {
 
         // Stake supply - 1
         rebase.stake(tokenAddr, supply - 1, app);
-        uint stake = rebase.getStake(thisAddr, app, tokenAddr);
+        uint stake = rebase.getUserAppStake(thisAddr, app, tokenAddr);
         assertEq(stake, supply - 1);
 
         // Stake 1
         rebase.stake(tokenAddr, 1, app);
-        stake = rebase.getStake(thisAddr, app, tokenAddr);
+        stake = rebase.getUserAppStake(thisAddr, app, tokenAddr);
         assertEq(stake, supply);
 
         address reTokenAddr = rebase.getReToken(tokenAddr);
@@ -126,19 +126,19 @@ contract RebaseTest is Test {
         rebase.stakeETH{value: 1 ether}(appAAddr);
         rebase.stakeETH{value: 2 ether}(appBAddr);
 
-        uint stake = rebase.getStake(thisAddr, appAAddr, productionWeth);
+        uint stake = rebase.getUserAppStake(thisAddr, appAAddr, productionWeth);
         assertEq(stake, 1 ether);
-        stake = rebase.getStake(thisAddr, appBAddr, productionWeth);
+        stake = rebase.getUserAppStake(thisAddr, appBAddr, productionWeth);
         assertEq(stake, 2 ether);
 
         assertEq(thisAddr.balance, 7 ether);
         assertEq(productionWeth.balance, 3 ether);
 
-        rebase.unstake(productionWeth, 1 ether, appAAddr);
+        rebase.unstakeETH(1 ether, appAAddr);
 
-        stake = rebase.getStake(thisAddr, appAAddr, productionWeth);
+        stake = rebase.getUserAppStake(thisAddr, appAAddr, productionWeth);
         assertEq(stake, 0);
-        stake = rebase.getStake(thisAddr, appBAddr, productionWeth);
+        stake = rebase.getUserAppStake(thisAddr, appBAddr, productionWeth);
         assertEq(stake, 2 ether);
 
         assertEq(thisAddr.balance, 8 ether);
@@ -156,9 +156,9 @@ contract RebaseTest is Test {
 
         // Stake 3 in App A
         rebase.stake(tokenAddr, 3, appAAddr);
-        uint stake = rebase.getStake(thisAddr, appAAddr, tokenAddr);
+        uint stake = rebase.getUserAppStake(thisAddr, appAAddr, tokenAddr);
         uint restaked = appA.getStake(thisAddr, tokenAddr);
-        address[] memory apps = rebase.getApps(thisAddr);
+        address[] memory apps = rebase.getUserApps(thisAddr);
         assertEq(stake, 3);
         assertEq(restaked, 3);
         assertEq(apps.length, 1);
@@ -169,27 +169,27 @@ contract RebaseTest is Test {
 
         // Unstake 2; unrestake fails but we keep remaining 1 stake
         rebase.unstake(tokenAddr, 2, appAAddr);
-        stake = rebase.getStake(thisAddr, appAAddr, tokenAddr);
+        stake = rebase.getUserAppStake(thisAddr, appAAddr, tokenAddr);
         restaked = appA.getStake(thisAddr, tokenAddr);
-        apps = rebase.getApps(thisAddr);
+        apps = rebase.getUserApps(thisAddr);
         assertEq(stake, 1);
         assertEq(restaked, 3);
         assertEq(apps.length, 1);
         assertEq(apps[0], appAAddr);
 
         rebase.unstake(tokenAddr, 1, appAAddr);
-        stake = rebase.getStake(thisAddr, appAAddr, tokenAddr);
+        stake = rebase.getUserAppStake(thisAddr, appAAddr, tokenAddr);
         restaked = appA.getStake(thisAddr, tokenAddr);
-        apps = rebase.getApps(thisAddr);
+        apps = rebase.getUserApps(thisAddr);
         assertEq(stake, 0);
         assertEq(restaked, 3);
         assertEq(apps.length, 0);
 
         // Stake 1
         rebase.stake(tokenAddr, 2, appBAddr);
-        stake = rebase.getStake(thisAddr, appBAddr, tokenAddr);
+        stake = rebase.getUserAppStake(thisAddr, appBAddr, tokenAddr);
         restaked = appB.getStake(thisAddr, tokenAddr);
-        apps = rebase.getApps(thisAddr);
+        apps = rebase.getUserApps(thisAddr);
         assertEq(stake, 2);
         assertEq(restaked, 2);
         assertEq(apps[0], appBAddr);
@@ -202,9 +202,9 @@ contract RebaseTest is Test {
 
         // Should remove app
         rebase.unstake(tokenAddr, 1, appBAddr);
-        stake = rebase.getStake(thisAddr, appBAddr, tokenAddr);
+        stake = rebase.getUserAppStake(thisAddr, appBAddr, tokenAddr);
         restaked = appB.getStake(thisAddr, tokenAddr);
-        apps = rebase.getApps(thisAddr);
+        apps = rebase.getUserApps(thisAddr);
         assertEq(stake, 1);
         assertEq(restaked, 2); // broken
         assertEq(apps.length, 1);
@@ -215,9 +215,9 @@ contract RebaseTest is Test {
 
         // Should remove app
         rebase.unstake(tokenAddr, 1, appBAddr);
-        stake = rebase.getStake(thisAddr, appBAddr, tokenAddr);
+        stake = rebase.getUserAppStake(thisAddr, appBAddr, tokenAddr);
         restaked = appB.getStake(thisAddr, tokenAddr);
-        apps = rebase.getApps(thisAddr);
+        apps = rebase.getUserApps(thisAddr);
         assertEq(stake, 0);
         assertEq(restaked, 2); // broken
         assertEq(apps.length, 0);
