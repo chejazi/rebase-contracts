@@ -179,4 +179,8 @@ contract StakingApp is Rebased, Ownable {
     function getNumUserStakes(address user) external view returns (uint) {
         return _userTokenStakes[user].length();
     }
+
+    function getRewardToken() external view returns (address) {
+        return _rewardToken;
+    }
 }
