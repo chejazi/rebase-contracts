@@ -1,70 +1,62 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract RewardPool {
     using SafeMath for uint256;
 
-    uint256 public immutable rewardTotal;
-    uint256 public immutable rewardDuration;
-    address public immutable rewardDistributor;
-    address public immutable rewardToken;
-    uint256 public immutable periodFinish;
-    uint256 public immutable rewardRate;
-
-    uint256 public lastUpdateTime;
-    uint256 public rewardPerTokenStored;
-    mapping(address => uint256) public userRewardPerTokenPaid;
-    mapping(address => uint256) public rewards;
-
+    address private _rewardDistributor;
+    uint256 private _rewardPerTokenStored;
+    uint256 private _rewardTotal;
+    uint256 private _rewardDuration;
+    uint256 private _periodFinish;
     uint256 private _totalSupply;
+    uint256 private _lastUpdateTime;
+    mapping(address => uint256) private _userRewardPerTokenPaid;
+    mapping(address => uint256) private _rewards;
     mapping(address => uint256) private _balances;
 
-    event RewardAdded(uint256 reward);
-    event RewardPaid(address indexed user, uint256 reward);
-
     modifier updateReward(address user) {
-        rewardPerTokenStored = rewardPerToken();
-        lastUpdateTime = lastTimeRewardApplicable();
+        _rewardPerTokenStored = rewardPerToken();
+        _lastUpdateTime = lastTimeRewardApplicable();
         if (user != address(0)) {
-            rewards[user] = earned(user);
-            userRewardPerTokenPaid[user] = rewardPerTokenStored;
+            _rewards[user] = earned(user);
+            _userRewardPerTokenPaid[user] = _rewardPerTokenStored;
         }
         _;
     }
 
     modifier onlyRewardDistributor() {
-        require(msg.sender == rewardDistributor, "Caller is not reward distribution");
+        require(msg.sender == _rewardDistributor, "Caller is not reward distributor");
         _;
     }
 
-    constructor(uint reward, address token, uint duration) {
-        rewardTotal = reward;
-        rewardDuration = duration;
-        rewardDistributor = msg.sender;
-        rewardToken = token;
-        lastUpdateTime = block.timestamp;
-        periodFinish = block.timestamp.add(rewardDuration);
-        rewardRate = reward.div(rewardDuration);
-        emit RewardAdded(reward);
+    function init(address distributor, uint reward, uint duration) external {
+        require(_rewardDistributor == address(0), "Already Initialized");
+        require(reward > 0 && duration > 0, "Invalid reward");
+        _rewardDistributor = distributor;
+        _rewardTotal = reward;
+        _rewardDuration = duration;
+        _lastUpdateTime = block.timestamp;
+        _periodFinish = block.timestamp.add(_rewardDuration);
     }
 
     function lastTimeRewardApplicable() public view returns (uint256) {
-        return Math.min(block.timestamp, periodFinish);
+        uint endTime = _periodFinish;
+        return block.timestamp < endTime ? block.timestamp : endTime;
     }
 
     function rewardPerToken() public view returns (uint256) {
         if (_totalSupply == 0) {
-            return rewardPerTokenStored;
+            return _rewardPerTokenStored;
         }
         return
-            rewardPerTokenStored.add(
+            _rewardPerTokenStored.add(
                 lastTimeRewardApplicable()
-                    .sub(lastUpdateTime)
-                    .mul(rewardRate)
+                    .sub(_lastUpdateTime)
+                    .mul(_rewardTotal)
+                    .div(_rewardDuration)
                     .mul(1e18)
                     .div(_totalSupply)
             );
@@ -73,9 +65,9 @@ contract RewardPool {
     function earned(address user) public view returns (uint256) {
         return
             balanceOf(user)
-                .mul(rewardPerToken().sub(userRewardPerTokenPaid[user]))
+                .mul(rewardPerToken().sub(_userRewardPerTokenPaid[user]))
                 .div(1e18)
-                .add(rewards[user]);
+                .add(_rewards[user]);
     }
 
     function add(address user, uint256 amount) external onlyRewardDistributor updateReward(user) {
@@ -88,13 +80,10 @@ contract RewardPool {
         _balances[user] = _balances[user].sub(amount);
     }
 
-    function payReward(address user) public onlyRewardDistributor updateReward(user) {
+    function payReward(address user) external onlyRewardDistributor updateReward(user) returns (uint) {
         uint256 reward = earned(user);
-        if (reward > 0) {
-            rewards[user] = 0;
-            ERC20(rewardToken).transfer(user, reward);
-            emit RewardPaid(user, reward);
-        }
+        _rewards[user] = 0;
+        return reward;
     }
 
     function totalSupply() public view returns (uint256) {
@@ -106,14 +95,14 @@ contract RewardPool {
     }
 
     function getStartTime() public view returns (uint256) {
-        return periodFinish - rewardDuration;
+        return _periodFinish - _rewardDuration;
     }
 
     function getEndTime() public view returns (uint256) {
-        return periodFinish;
+        return _periodFinish;
     }
 
     function getTotalReward() public view returns (uint256) {
-        return rewardTotal;
+        return _rewardTotal;
     }
 }

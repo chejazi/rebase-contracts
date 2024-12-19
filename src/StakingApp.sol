@@ -1,48 +1,81 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
-import "./Rebase.sol";
+import "./RebaseFeeManager.sol";
 import "./RewardPool.sol";
 
-contract StakingApp is Rebased, Ownable {
+interface IRebased {
+    function onStake(address user, address token, uint quantity) external;
+    function onUnstake(address user, address token, uint quantity) external;
+}
+
+contract StakingApp is IRebased, Ownable {
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableMap for EnumerableMap.AddressToUintMap;
     using SafeMath for uint256;
 
+    RebaseFeeManager private constant _feeManager = RebaseFeeManager(0x74EbF286181962be0d74910b4FE399abCBe9054C);
+    address private constant _refi = 0x7dbdBF103Bb03c6bdc584c0699AA1800566f0F84;
     address private constant _rebase = 0x89fA20b30a88811FBB044821FEC130793185c60B;
-    address private immutable _rewardToken;
+    address private _rewardToken;
+    address private _manager;
     EnumerableSet.AddressSet private _tokens;
     mapping(address => EnumerableSet.AddressSet) private _tokenPools;
     mapping(address => EnumerableSet.AddressSet) private _userPools;
     mapping(address => EnumerableMap.AddressToUintMap) private _userTokenStakes;
+    address public immutable _poolTemplate;
+    uint private _nonce;
 
     modifier onlyRebase {
         require(msg.sender == _rebase, "Only Rebase");
         _;
     }
 
-    constructor(address rewardToken) {
-        _rewardToken = rewardToken;
+    constructor() {
+        _poolTemplate = address(new RewardPool());
     }
 
-    function createPool(address[] memory tokens, uint[] memory quantities, uint[] memory durations) external onlyOwner {
-        require(tokens.length == quantities.length && tokens.length == durations.length, "Array mismatch");
+    function init(address rewardToken, address initialOwner) external {
+        require(_rewardToken == address(0), "Already initialized");
+        _rewardToken = rewardToken;
+        _manager = msg.sender;
+        _transferOwnership(initialOwner);
+    }
 
-        for (uint i = 0; i < tokens.length; i++) {
-            address token = tokens[i];
-            uint quantity = quantities[i];
-            uint duration = durations[i];
+    function updateManager(address manager) external onlyOwner {
+        _manager = manager;
+    }
 
-            address pool = address(new RewardPool(quantity, _rewardToken, duration));
-            require(ERC20(token).transferFrom(msg.sender, pool, quantity), "Unable to transfer token");
-            _tokenPools[token].add(pool);
-            _tokens.add(token);
+    function createStakePool(address token, address funder, uint quantity, uint duration) external returns (address, address) {
+        require(
+            msg.sender == _manager ||
+            msg.sender == owner(),
+            "Not authorized"
+        );
+
+        address feePool = address(0);
+        uint fee = quantity * _feeManager.getTokenFeeRateBips(token) / 10000;
+        if (fee > 0) {
+            feePool = Clones.cloneDeterministic(address(_poolTemplate), bytes32(_nonce++));
+            RewardPool(feePool).init(address(this), fee, duration);
+            _tokenPools[_refi].add(feePool);
+            _tokens.add(_refi);
         }
+
+        address rewardPool = Clones.cloneDeterministic(address(_poolTemplate), bytes32(_nonce++));
+        RewardPool(rewardPool).init(address(this), quantity.sub(fee), duration);
+        _tokenPools[token].add(rewardPool);
+        _tokens.add(token);
+
+        require(IERC20(_rewardToken).transferFrom(funder, address(this), quantity), "Unable to fund pool");
+
+        return (rewardPool, feePool);
     }
 
     function onStake(address user, address token, uint quantity) external onlyRebase {
@@ -71,6 +104,8 @@ contract StakingApp is Rebased, Ownable {
 
         EnumerableSet.AddressSet storage userPools = _userPools[user];
         (,uint stake) = _userTokenStakes[user].tryGet(token);
+
+        require(quantity <= stake, "Invalid unstake amount");
 
         for (uint i = 0; i < pools.length; i++) {
             address pool = pools[i];
@@ -106,7 +141,10 @@ contract StakingApp is Rebased, Ownable {
     function claimRewards() external {
         address[] memory pools = _userPools[msg.sender].values();
         for (uint i = 0; i < pools.length; i++) {
-            RewardPool(pools[i]).payReward(msg.sender);
+            uint reward = RewardPool(pools[i]).payReward(msg.sender);
+            if (reward > 0) {
+                require(IERC20(_rewardToken).transferFrom(address(this), msg.sender, reward), "Unable to send reward");
+            }
         }
     }
 
